@@ -1,0 +1,117 @@
+def print_results_table(results: List[Dict[str, Any]]) -> None:
+    print("\n" + "=" * 80)
+    print("=== WILLOW PORT SCAN ===")
+    print("=" * 80)
+
+    for item in results:
+        ip = item.get("ip", "-")
+        hostname = item.get("hostname", "-")
+        mac = item.get("mac", "-")
+        vendor = item.get("vendor", "-")
+        ports = item.get("open_ports", [])
+
+        print(f"\n[DEVICE] {ip}")
+        print(f"Hostname : {hostname}")
+        print(f"MAC      : {mac}")
+        print(f"Vendor   : {vendor}")
+
+        if not ports:
+            print("No open ports found.")
+            print("-" * 80)
+            continue
+
+        print("-" * 80)
+        print(
+            f"{'Port':<8}"
+            f"{'Service':<15}"
+            f"{'Product':<20}"
+            f"{'Version':<30}"
+            f"{'Risk':<10}"
+        )
+        print("-" * 80)
+
+        for p in ports:
+            port = str(p.get("port", "-"))
+            service = truncate(str(p.get("service", "-")), 14)
+            product = truncate(str(p.get("product", "-")), 19)
+            version = truncate(str(p.get("version", "-")), 29)
+            risk = str(p.get("risk", "-"))
+
+            print(
+                f"{port:<8}"
+                f"{service:<15}"
+                f"{product:<20}"
+                f"{version:<30}"
+                f"{risk:<10}"
+            )
+
+            banner = p.get("banner", "-")
+            if banner and banner != "-":
+                print(f"   Banner: {truncate(str(banner), 80)}")
+
+            vulnerabilities = p.get("vulnerabilities", [])
+            if vulnerabilities:
+                cve_list = []
+                for v in vulnerabilities[:3]:
+                    cve_id = v.get("cve_id") or v.get("cve") or "Unknown CVE"
+                    cve_list.append(cve_id)
+
+                print(f"   CVEs  : {', '.join(cve_list)}")
+
+            print()
+
+        print("-" * 80)
+
+def main() -> None:
+    args = parse_args()
+    show_startup_banner()
+
+    scan_data = run_scan(
+        file_path=args.devices,
+        threads=args.threads,
+        all_ports=args.all_ports,
+        ports=args.ports,
+    )
+
+    kev_index = get_kev_index()
+
+    if kev_index:
+        kev_matches = 0
+        total_vulns = 0
+
+        for device in scan_data.get("results", []):
+            for port in device.get("open_ports", []):
+                vulnerabilities = port.get("vulnerabilities", [])
+                if vulnerabilities:
+                    enriched_vulns = enrich_with_kev(vulnerabilities, kev_index)
+                    port["vulnerabilities"] = enriched_vulns
+
+                    total_vulns += len(enriched_vulns)
+                    kev_matches += sum(1 for vuln in enriched_vulns if vuln.get("kev"))
+
+        print(
+            f"[+] KEV enrichment complete: "
+            f"{kev_matches} KEV match(es) across "
+            f"{total_vulns} vulnerability record(s)."
+        )
+    else:
+        print("[!] KEV index unavailable; continuing without KEV enrichment")
+
+    previous_scan = load_previous_scan()
+    changes = compare_scans(previous_scan, scan_data)
+
+    print_scan_results_grouped(scan_data, console)
+    print_results_table(scan_data.get("results", []))
+
+    print("\n=== CHANGES SINCE LAST SCAN ===")
+    for change in changes:
+        print(f"- {change}")
+
+    save_scan_results(scan_data)
+    export_csv(scan_data.get("results", []))
+    export_html_report(scan_data, changes)
+
+    summary = generate_ollama_summary(scan_data, changes)
+
+    console.print("\n[bold magenta]=== OLLAMA SUMMARY ===[/bold magenta]")
+    console.print(summary)
